@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="fi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PakkausPro – Pakkaustietojen raportointityökalu</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 20px;
+      background-color: #f7f7f7;
+      color: #333;
+    }
+    h1 {
+      text-align: center;
+      color: #2e5aac;
+    }
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      background: #fff;
+      padding: 20px;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+      border-radius: 4px;
+    }
+    .dashboard {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      margin-top: 20px;
+    }
+    .chart-container {
+      max-width: 600px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    input[type="file"] {
+      margin: 10px 0;
+    }
+    button {
+      background: #2e5aac;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    button:hover {
+      background: #21427a;
+    }
+    .results {
+      margin-top: 20px;
+    }
+    .error {
+      color: #c02f2f;
+    }
+    .warning {
+      color: #c38f1b;
+    }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      margin-top: 10px;
+      background: #fff;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    th, td {
+      border: 1px solid #ddd;
+      padding: 8px;
+      text-align: left;
+    }
+    th {
+      background-color: #2e5aac;
+      color: #fff;
+    }
+    ul {
+      padding-left: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>PakkausPro</h1>
+    <p>Tämä työkalu auttaa sinua täyttämään pakkaustietojen raportointivelvollisuutesi Suomessa. Lataa CSV‑tiedosto, joka sisältää kaksi saraketta: <code>material</code> (materiaalilaji) ja <code>weight</code> (paino kiloina). Käytettävät materiaalit ovat paper, plastic, metal, glass, wood, composite tai other. Työkalu tarkistaa datan, laskee kokonaistulot ja antaa ohjeita.</p>
+    <input type="file" id="csvFile" accept=".csv">
+    <div id="preview" style="margin-top:10px;"></div>
+    <div style="margin-bottom:12px;">
+      <button id="clearPreviewBtn" style="display:none; background:#c02f2f;">Poista esikatselu</button>
+      <button id="uploadBtn">Lähetä</button>
+      <button id="downloadPdfBtn" style="display:none; background:#4CAF50;">Lataa PDF-raportti</button>
+    </div>
+    <div class="dashboard">
+      <div class="results" id="results"></div>
+      <div class="chart-container">
+        <canvas id="materialChart"></canvas>
+      </div>
+    </div>
+    <hr>
+    <h2>Sääntelyohjeet</h2>
+    <div id="guidance"></div>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0"></script>
+  <script>
+    // Esikatselu CSV-tiedostosta
+    document.getElementById('csvFile').addEventListener('change', function(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        const text = e.target.result;
+        const lines = text.split(/\r?\n/).slice(0, 6); // Otsikko + 5 riviä
+        let html = '<h3>Esikatselu</h3><table><tbody>';
+        lines.forEach((line, index) => {
+          if (!line.trim()) return;
+          const cols = line.split(',');
+          html += '<tr>' + cols.map(c => `<td>${c}</td>`).join('') + '</tr>';
+        });
+        html += '</tbody></table>';
+        document.getElementById('preview').innerHTML = html;
+        document.getElementById('clearPreviewBtn').style.display = 'inline-block';
+      };
+      reader.readAsText(file);
+    });
+
+    // Poista esikatselu
+    document.getElementById('clearPreviewBtn').addEventListener('click', function() {
+      document.getElementById('csvFile').value = '';
+      document.getElementById('preview').innerHTML = '';
+      this.style.display = 'none';
+    });
+
+    document.getElementById('uploadBtn').addEventListener('click', function() {
+      const fileInput = document.getElementById('csvFile');
+      if (!fileInput.files.length) {
+        alert('Valitse CSV-tiedosto ensin.');
+        return;
+      }
+      const formData = new FormData();
+      formData.append('file', fileInput.files[0]);
+      fetch('/upload', {
+        method: 'POST',
+        body: formData
+      })
+      .then(response => response.json())
+      .then(data => {
+        const container = document.getElementById('results');
+        container.innerHTML = '';
+        if (!data.success) {
+          container.innerHTML = '<p class="error">'+(data.error || 'Tiedoston käsittely epäonnistui.')+'</p>';
+          return;
+        }
+        // Display summary table
+        let html = '<h3>Yhteenveto</h3>';
+        html += '<table><tr><th>Materiaali</th><th>Paino (kg)</th></tr>';
+        for (const [mat, w] of Object.entries(data.totals)) {
+          html += `<tr><td>${mat}</td><td>${w.toFixed(2)}</td></tr>`;
+        }
+        html += '</table>';
+        // Kokonaispaino
+        if (data.totalWeight) {
+          html += `<p><strong>Kokonaispaino:</strong> ${data.totalWeight.toFixed(2)} kg</p>`;
+        }
+        html += `<p>${data.message}</p>`;
+        if (data.recommendations && data.recommendations.length) {
+          html += '<h4>Suositukset</h4><ul>';
+          data.recommendations.forEach(rec => {
+            html += `<li class="warning">${rec}</li>`;
+          });
+          html += '</ul>';
+        }
+        container.innerHTML = html;
+
+        // Päivitä piirakkakaavio
+        const ctx = document.getElementById('materialChart').getContext('2d');
+        if (window.materialChart && typeof window.materialChart.destroy === 'function') {
+          window.materialChart.destroy();
+        }
+        const labels = Object.keys(data.totals);
+        const values = Object.values(data.totals);
+        window.materialChart = new Chart(ctx, {
+          type: 'pie',
+          data: {
+            labels: labels,
+            datasets: [{
+              data: values,
+              backgroundColor: [
+                '#4e79a7',
+                '#f28e2b',
+                '#e15759',
+                '#76b7b2',
+                '#59a14f',
+                '#edc949',
+                '#af7aa1'
+              ]
+            }]
+          },
+          options: {
+            responsive: true,
+            layout: {
+              padding: {
+                top: 50,
+                bottom: 50,
+                left: 80,
+                right: 80
+              }
+            },
+            plugins: {
+              legend: {
+                position: 'bottom',
+                labels: {
+                  font: { size: 14, weight: 'bold' },
+                  boxWidth: 20,
+                  padding: 15
+                }
+              },
+              datalabels: {
+                color: '#000',
+                backgroundColor: 'rgba(255,255,255,0.85)',
+                borderColor: '#444',
+                borderWidth: 1,
+                borderRadius: 4,
+                padding: 5,
+                font: { weight: 'bold', size: 14 },
+                formatter: (value, ctx) => {
+                  const total = ctx.chart.data.datasets[0].data.reduce((a,b) => a + b, 0);
+                  const percentage = (value / total * 100).toFixed(1) + '%';
+                  return `${percentage}`;
+                },
+                anchor: 'end',
+                align: 'end',
+                offset: function(context) {
+                  const value = context.dataset.data[context.dataIndex];
+                  const total = context.dataset.data.reduce((a,b) => a + b, 0);
+                  const percentage = (value / total * 100);
+                  return percentage < 10 ? 40 : 30;
+                },
+                clamp: false,
+                display: true,
+                clip: false,
+                leaderLine: {
+                  display: true,
+                  color: '#333',
+                  lineWidth: 1.5,
+                  length: 25,
+                  dash: []
+                }
+              }
+            }
+          },
+          plugins: [ChartDataLabels]
+        });
+
+        // Näytä PDF-latauspainike
+        document.getElementById('downloadPdfBtn').style.display = 'inline-block';
+      })
+      .catch(err => {
+        console.error(err);
+        document.getElementById('results').innerHTML = '<p class="error">Palvelinvirhe: '+err.message+'</p>';
+      });
+    });
+
+    // PDF-raportin lataus
+    document.getElementById('downloadPdfBtn').addEventListener('click', function() {
+      const resultsElement = document.querySelector('.results');
+      const chartCanvas = document.getElementById('materialChart');
+      if (!resultsElement) return;
+
+      // Luo väliaikainen div, johon lisätään kopio tuloksista ja kaavio
+      const tempDiv = document.createElement('div');
+      tempDiv.innerHTML = resultsElement.innerHTML;
+
+      if (chartCanvas) {
+        const chartImage = chartCanvas.toDataURL('image/png', 1.0);
+        const imgElement = document.createElement('img');
+        imgElement.src = chartImage;
+        imgElement.style.maxWidth = '100%';
+        imgElement.style.marginTop = '20px';
+        tempDiv.appendChild(imgElement);
+      }
+
+      import('https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js')
+        .then(() => {
+          const opt = {
+            margin:       10,
+            filename:     'pakkauspro-raportti.pdf',
+            image:        { type: 'jpeg', quality: 0.98 },
+            html2canvas:  { scale: 2 },
+            jsPDF:        { unit: 'mm', format: 'a4', orientation: 'portrait' }
+          };
+          window.html2pdf().set(opt).from(tempDiv).save();
+        });
+    });
+
+    // Fetch and display static guidance on load
+    fetch('/guidance')
+      .then(res => res.json())
+      .then(data => {
+        let html = '<ul>';
+        data.bullets.forEach(b => {
+          html += `<li>${b}</li>`;
+        });
+        html += '</ul>';
+        document.getElementById('guidance').innerHTML = html;
+      });
+  </script>
+</body>
+</html>
